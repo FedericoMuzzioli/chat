@@ -5,15 +5,63 @@ import (
 	"net"
 )
 
-func handleConnection(_conn net.Conn) {
-	defer _conn.Close()
-	message := []byte("Hi muzzio")
-	n, err := _conn.Write(message)
-	if err != nil {
-		log.Printf("Could not wrtite to: %s", _conn.RemoteAddr())
+type MessageType int
+
+const (
+	ClientConnected MessageType = iota + 1
+	DeleteCLient
+	NewMessage
+)
+
+type Client struct {
+	conn     net.Conn
+	outgoing chan string
+}
+
+type Message struct {
+	Type    MessageType
+	Conn    net.Conn
+	Message string
+}
+
+func server(messages chan Message) {
+	clients := map[string]net.Conn{}
+	for {
+		msg := <-messages
+		switch msg.Type {
+		case ClientConnected:
+			clients[msg.Conn.RemoteAddr().String()] = msg.Conn
+		case DeleteCLient:
+			msg.Conn.Close()
+			delete(clients, msg.Conn.RemoteAddr().String())
+		case NewMessage:
+			for _, conn := range clients {
+				log.Printf("Read  wrtite from %s: %s", conn.RemoteAddr(), msg.Message)
+				_, err := conn.Write([]byte(msg.Message))
+				if err != nil {
+					log.Printf("Could not wrtite to %s: %s", conn.RemoteAddr(), err)
+				}
+			}
+		}
 	}
-	if n < len(message) {
-		log.Printf("Could not wrtite entire message: %d out of %d", n, len(message))
+}
+
+func client(_conn net.Conn, messages chan Message) {
+	buffer := make([]byte, 64)
+	for {
+		n, err := _conn.Read(buffer)
+		if err != nil {
+			messages <- Message{
+				Type: DeleteCLient,
+				Conn: _conn,
+			}
+			return
+		}
+		messages <- Message{
+			Type:    NewMessage,
+			Conn:    _conn,
+			Message: string(buffer[0:n]),
+		}
 	}
 }
 
@@ -25,12 +73,21 @@ func main() {
 		log.Fatalf("ERROR : %s", err)
 	}
 	log.Printf("Listening to TCP: %s", PORT)
+	messages := make(chan Message)
+	go server(messages)
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			log.Printf("ERROR temp: %s", err)
 			// handle error
 		}
-		go handleConnection(conn)
+		log.Printf("Accepted Connection from: %s", conn.RemoteAddr())
+
+		messages <- Message{
+			Type: ClientConnected,
+			Conn: conn,
+		}
+
+		go client(conn, messages)
 	}
 }
